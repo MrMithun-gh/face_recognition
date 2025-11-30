@@ -27,6 +27,8 @@ import psycopg2.extras
 
 # Face model
 from face_model import FaceRecognitionModel
+from face_utils import aggregate_face_encoding_from_bgr_frames
+
 
 # --- CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -98,47 +100,30 @@ def process_images(event_id):
         os.makedirs(output_dir, exist_ok=True)
         
         print(f"--- [PROCESS] Starting for event: {event_id} ---")
+
         for filename in os.listdir(input_dir):
             if (filename.lower().endswith(('.png', '.jpg', '.jpeg'))
                 and not filename.endswith('_qr.png')):
-                
+
                 image_path = os.path.join(input_dir, filename)
                 print(f"--- [PROCESS] Image: {filename}")
+
                 try:
                     image = face_recognition.load_image_file(image_path)
                     face_encodings = face_recognition.face_encodings(image)
                     print(f"--- [PROCESS] Found {len(face_encodings)} face(s) in {filename}")
-                    
-                    person_ids_in_image = {
-                        model.learn_face(encoding) for encoding in face_encodings
-                    }
 
-                    if len(face_encodings) > 0:
-                        for pid in person_ids_in_image:
-                            person_dir = os.path.join(output_dir, pid)
-                            indiv_dir = os.path.join(person_dir, "individual")
-                            group_dir = os.path.join(person_dir, "group")
-                            os.makedirs(indiv_dir, exist_ok=True)
-                            os.makedirs(group_dir, exist_ok=True)
-
-                            if len(face_encodings) == 1:
-                                # Individual photo
-                                shutil.copy(
-                                    image_path,
-                                    os.path.join(indiv_dir, filename)
-                                )
-                            else:
-                                # Group photo (watermarked_ prefix used later)
-                                shutil.copy(
-                                    image_path,
-                                    os.path.join(group_dir, f"watermarked_{filename}")
-                                )
+                    # Learn faces without saving per face
+                    for encoding in face_encodings:
+                        model.learn_face(encoding)
 
                 except Exception as e:
                     print(f"  -> ERROR processing {filename}: {e}")
-        
-        model.save_model()  # Persist new faces
+
+        # save only ONCE after all files processed
+        model.save_model()
         print(f"--- [PROCESS] Finished for event: {event_id} ---")
+
     except Exception as e:
         print(f"  -> FATAL ERROR during processing for event {event_id}: {e}")
 
@@ -413,60 +398,115 @@ def get_events():
 @app.route('/recognize', methods=['POST'])
 @login_required
 def recognize_face():
-    try:
-        data = request.get_json()
-        image_data = data.get('image')
-        event_id = data.get('event_id', 'default_event')
-        if not image_data:
-            return jsonify({"success": False, "error": "No image provided"}), 400
-        
-        img_bytes = base64.b64decode(image_data)
-        np_arr = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    """
+    Recognize face from either:
+      - legacy: { "image": "<base64>" }
+      - new:    { "images": ["<b64_1>", "<b64_2>", ...] }
 
-        face_locations = face_recognition.face_locations(rgb_img)
-        if not face_locations:
-            return jsonify({"success": False, "error": "No face detected in scan."}), 400
-        
-        scanned_encoding = face_recognition.face_encodings(rgb_img, face_locations)[0]
-        
-        # Use ML model
-        person_id = model.recognize_face(scanned_encoding)
-        
-        if person_id:
-            person_dir = os.path.join(app.config['PROCESSED_FOLDER'], event_id, person_id)
-            if not os.path.exists(person_dir):
+    Multi-frame path aggregates multiple frames using quality scores.
+    """
+    try:
+        data = request.get_json() or {}
+        event_id = data.get('event_id', 'default_event')
+
+        frames_b64 = data.get('images')  # NEW: list of frames
+        single_b64 = data.get('image')   # OLD: single frame
+
+        if not frames_b64 and not single_b64:
+            return jsonify({"success": False, "error": "No image provided"}), 400
+
+        # --- Multi-frame path (preferred) ---
+        if isinstance(frames_b64, list) and len(frames_b64) > 0:
+            frames_bgr = []
+            for b64_str in frames_b64:
+                try:
+                    img_bytes = base64.b64decode(b64_str)
+                    np_arr = np.frombuffer(img_bytes, np.uint8)
+                    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                    if frame is not None:
+                        frames_bgr.append(frame)
+                except Exception as e:
+                    print(f"[RECOGNIZE] Failed to decode one frame: {e}")
+
+            if not frames_bgr:
                 return jsonify({
                     "success": False,
-                    "error": "Match found, but no photos in this event."
-                }), 404
-            
-            individual_dir = os.path.join(person_dir, "individual")
-            group_dir = os.path.join(person_dir, "group")
+                    "error": "Could not decode any webcam frames."
+                }), 400
 
-            individual_photos = (
-                [f for f in os.listdir(individual_dir)]
-                if os.path.exists(individual_dir) else []
-            )
-            group_photos = (
-                [f for f in os.listdir(group_dir) if f.startswith('watermarked_')]
-                if os.path.exists(group_dir) else []
-            )
-            
-            return jsonify({
-                "success": True,
-                "person_id": person_id,
-                "individual_photos": individual_photos,
-                "group_photos": group_photos,
-                "event_id": event_id
-            })
+            scanned_encoding = aggregate_face_encoding_from_bgr_frames(frames_bgr)
+            if scanned_encoding is None:
+                return jsonify({
+                    "success": False,
+                    "error": "No clear face detected in captured frames."
+                }), 400
+
+        # --- Legacy single-frame path (still supported) ---
         else:
-            return jsonify({"success": False, "error": "No confident match found."}), 404
+            img_bytes = base64.b64decode(single_b64)
+            np_arr = np.frombuffer(img_bytes, np.uint8)
+            img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if img is None:
+                return jsonify({
+                    "success": False,
+                    "error": "Unable to decode image."
+                }), 400
+
+            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            face_locations = face_recognition.face_locations(rgb_img)
+            if not face_locations:
+                return jsonify({
+                    "success": False,
+                    "error": "No face detected in scan."
+                }), 400
+
+            scanned_encoding = face_recognition.face_encodings(
+                rgb_img, face_locations
+            )[0]
+
+        # --- Use ML model for identification ---
+        person_id = model.recognize_face(scanned_encoding)
+
+        if not person_id:
+            return jsonify({
+                "success": False,
+                "error": "No confident match found."
+            }), 404
+
+        # Locate this person's photos for the requested event
+        person_dir = os.path.join(app.config['PROCESSED_FOLDER'], event_id, person_id)
+        if not os.path.exists(person_dir):
+            return jsonify({
+                "success": False,
+                "error": "Match found, but no photos in this event."
+            }), 404
+
+        individual_dir = os.path.join(person_dir, "individual")
+        group_dir = os.path.join(person_dir, "group")
+
+        individual_photos = (
+            [f for f in os.listdir(individual_dir)]
+            if os.path.exists(individual_dir) else []
+        )
+        group_photos = (
+            [f for f in os.listdir(group_dir) if f.startswith('watermarked_')]
+            if os.path.exists(group_dir) else []
+        )
+
+        return jsonify({
+            "success": True,
+            "person_id": person_id,
+            "individual_photos": individual_photos,
+            "group_photos": group_photos,
+            "event_id": event_id
+        })
 
     except Exception as e:
-        print(f"RECOGNIZE ERROR: {e}")
-        return jsonify({"success": False, "error": "An internal error occurred."}), 500
+        print(f"[RECOGNIZE ERROR]: {e}")
+        return jsonify({
+            "success": False,
+            "error": "An internal error occurred."
+        }), 500
 
 # --- EVENT ORGANIZER API ---
 @app.route('/api/create_event', methods=['POST'])
@@ -777,7 +817,10 @@ if __name__ == '__main__':
         # You can also create an empty list file here if you want
         pass
 
-    process_existing_uploads_on_startup()
+    #process_existing_uploads_on_startup()
+    
+    print("[LOG] Startup completed. No reprocessing triggered.")
+
 
     port = int(os.environ.get("PORT", 5000))
     # Use 127.0.0.1 for localhost only, or 0.0.0.0 for network access
