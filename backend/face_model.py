@@ -47,7 +47,7 @@ class FaceRecognitionModel:
         best_match_index = np.argmin(face_distances)
 
         # A very strict tolerance to decide if this is an existing person
-        if face_distances[best_match_index] < 0.5:
+        if face_distances[best_match_index] < 0.51:
             # This is an existing person
             return self.known_ids[best_match_index]
         else:
@@ -70,7 +70,7 @@ class FaceRecognitionModel:
         best_match_index = np.argmin(face_distances)
 
         # HIGH-ACCURACY THRESHOLD: Only a very close match is accepted.
-        STRICT_TOLERANCE = 0.54
+        STRICT_TOLERANCE = 0.62
 
         if face_distances[best_match_index] <= STRICT_TOLERANCE:
             person_id = self.known_ids[best_match_index]

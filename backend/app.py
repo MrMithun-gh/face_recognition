@@ -670,6 +670,99 @@ def get_private_photo(event_id, person_id, photo_type, filename):
     )
     return send_from_directory(photo_path, filename)
 
+# --- ADMIN PHOTO ACCESS ROUTES ---
+@app.route('/api/admin/events/<event_id>/all-photos', methods=['GET'])
+def get_admin_all_photos(event_id):
+    """Admin endpoint to get ORIGINAL uploaded photos for an event (no duplicates)"""
+    if not session.get('admin_logged_in'):
+        return jsonify({"success": False, "error": "Admin access required"}), 403
+    
+    # Get photos from uploads folder (original photos only)
+    upload_dir = os.path.join(app.config['UPLOAD_FOLDER'], event_id)
+    if not os.path.exists(upload_dir):
+        return jsonify({"success": False, "error": "No photos found for this event yet."}), 404
+    
+    all_photos = []
+    
+    # Get all original uploaded photos
+    for filename in os.listdir(upload_dir):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg')) and not filename.endswith('_qr.png'):
+            all_photos.append({
+                "url": f"/api/admin/photos/{event_id}/{filename}",
+                "filename": filename,
+                "original_filename": filename
+            })
+    
+    return jsonify({
+        "success": True,
+        "photos": all_photos,
+        "total": len(all_photos)
+    })
+
+@app.route('/api/admin/photos/<event_id>/<filename>')
+def serve_admin_photo(event_id, filename):
+    """Serve original uploaded photos to admin"""
+    if not session.get('admin_logged_in'):
+        return "Unauthorized", 403
+    
+    upload_dir = os.path.join(app.config['UPLOAD_FOLDER'], event_id)
+    if os.path.exists(os.path.join(upload_dir, filename)):
+        return send_from_directory(upload_dir, filename)
+    return "File Not Found", 404
+
+@app.route('/api/admin/photos/delete', methods=['POST'])
+def delete_photo():
+    """Admin endpoint to delete a photo from uploads folder"""
+    if not session.get('admin_logged_in'):
+        return jsonify({"success": False, "error": "Admin access required"}), 403
+    
+    data = request.get_json()
+    event_id = data.get('event_id')
+    filename = data.get('filename')
+    
+    if not all([event_id, filename]):
+        return jsonify({"success": False, "error": "Missing required parameters"}), 400
+    
+    # Delete from uploads folder
+    upload_path = os.path.join(
+        app.config['UPLOAD_FOLDER'],
+        event_id,
+        filename
+    )
+    
+    try:
+        # Delete the original uploaded photo
+        if os.path.exists(upload_path):
+            os.remove(upload_path)
+            print(f"Deleted upload photo: {upload_path}")
+        else:
+            return jsonify({"success": False, "error": "Photo not found"}), 404
+        
+        # Update events_data.json photo count
+        if os.path.exists(EVENTS_DATA_PATH):
+            with open(EVENTS_DATA_PATH, 'r') as f:
+                events_data = json.load(f)
+            
+            for event in events_data:
+                if event['id'] == event_id and event.get('photos_count', 0) > 0:
+                    event['photos_count'] -= 1
+                    break
+            
+            with open(EVENTS_DATA_PATH, 'w') as f:
+                json.dump(events_data, f, indent=2)
+        
+        return jsonify({
+            "success": True,
+            "message": "Photo deleted successfully. Run reprocessing to update face recognition."
+        })
+    
+    except Exception as e:
+        print(f"Error deleting photo: {e}")
+        return jsonify({
+            "success": False,
+            "error": f"Failed to delete photo: {str(e)}"
+        }), 500
+
 # --- STARTUP TASKS ---
 def process_existing_uploads_on_startup():
     print("--- [LOG] Checking for existing photos on startup... ---")
