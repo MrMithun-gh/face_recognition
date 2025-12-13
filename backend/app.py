@@ -1023,6 +1023,86 @@ def update_event_thumbnail(event_id):
         }), 500
 
 
+@app.route('/api/delete_event/<event_id>', methods=['DELETE'])
+def delete_event(event_id):
+    """
+    Delete an event and all associated data (photos, folders, metadata)
+    Requires admin authentication and ownership validation
+    """
+    # Check admin authentication
+    if not session.get('admin_logged_in'):
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    
+    try:
+        # Load events data
+        if not os.path.exists(EVENTS_DATA_PATH):
+            return jsonify({"success": False, "error": "Events data file not found"}), 404
+        
+        with open(EVENTS_DATA_PATH, 'r') as f:
+            events_data = json.load(f)
+        
+        # Find the event
+        event = None
+        event_index = None
+        for i, e in enumerate(events_data):
+            if e['id'] == event_id:
+                event = e
+                event_index = i
+                break
+        
+        if not event:
+            return jsonify({"success": False, "error": "Event not found"}), 404
+        
+        # Check ownership - admin can only delete their own events
+        admin_id = session.get('admin_id')
+        if event.get('created_by_admin_id') != admin_id:
+            return jsonify({
+                "success": False, 
+                "error": "You can only delete events you created"
+            }), 403
+        
+        # Delete event folders (uploads and processed)
+        upload_dir = os.path.join(app.config['UPLOAD_FOLDER'], event_id)
+        processed_dir = os.path.join(app.config['PROCESSED_FOLDER'], event_id)
+        
+        # Delete upload folder
+        if os.path.exists(upload_dir):
+            try:
+                shutil.rmtree(upload_dir)
+                print(f"Deleted upload folder: {upload_dir}")
+            except Exception as e:
+                print(f"Warning: Failed to delete upload folder: {e}")
+        
+        # Delete processed folder
+        if os.path.exists(processed_dir):
+            try:
+                shutil.rmtree(processed_dir)
+                print(f"Deleted processed folder: {processed_dir}")
+            except Exception as e:
+                print(f"Warning: Failed to delete processed folder: {e}")
+        
+        # Remove event from events_data.json
+        events_data.pop(event_index)
+        
+        # Save updated events data
+        with open(EVENTS_DATA_PATH, 'w') as f:
+            json.dump(events_data, f, indent=2)
+        
+        return jsonify({
+            "success": True,
+            "message": "Event deleted successfully"
+        }), 200
+    
+    except Exception as e:
+        print(f"Error deleting event: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False, 
+            "error": "Failed to delete event"
+        }), 500
+
+
 # --- PUBLIC & PRIVATE PHOTO SERVING ---
 @app.route('/api/events/<event_id>/photos', methods=['GET'])
 def get_event_photos(event_id):

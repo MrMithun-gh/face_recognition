@@ -362,16 +362,17 @@ POST /api/download_event_photos - Download event photos
 
 ### Admin Routes (Admin Authentication Required)
 ```
-POST /admin/register            - Admin registration
-POST /admin/login               - Admin login
-GET  /admin/logout              - Admin logout
-GET  /event_organizer           - Admin dashboard
-POST /api/create_event          - Create new event
-POST /api/upload_photos/:id     - Upload event photos
-GET  /api/my_events             - Get admin's events
-PUT  /api/events/:id            - Update event details
-POST /api/events/:id/thumbnail  - Update event thumbnail
-GET  /api/admin/events/:id/all-photos - Get original photos
+POST   /admin/register            - Admin registration
+POST   /admin/login               - Admin login
+GET    /admin/logout              - Admin logout
+GET    /event_organizer           - Admin dashboard
+POST   /api/create_event          - Create new event
+POST   /api/upload_photos/:id     - Upload event photos
+GET    /api/my_events             - Get admin's events
+PUT    /api/events/:id            - Update event details
+POST   /api/events/:id/thumbnail  - Update event thumbnail
+DELETE /api/delete_event/:id      - Delete event and all data
+GET    /api/admin/events/:id/all-photos - Get original photos
 ```
 
 ### Photo Serving Routes
